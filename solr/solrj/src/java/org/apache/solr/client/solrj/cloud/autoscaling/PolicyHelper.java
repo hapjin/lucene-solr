@@ -121,15 +121,21 @@ public class PolicyHelper {
 
     policyMapping.set(optionalPolicyMapping);
     SessionWrapper sessionWrapper = null;
-    Policy.Session session = null;
+
     try {
       try {
         SESSION_WRAPPPER_REF.set(sessionWrapper = getSession(delegatingManager));
       } catch (Exception e) {
         throw new SolrException(SolrException.ErrorCode.SERVER_ERROR, "unable to get autoscaling policy session", e);
-
       }
-      session = sessionWrapper.session;
+
+      Policy.Session origSession = sessionWrapper.session;
+      // new session needs to be created to avoid side-effects from per-collection policies
+      // TODO: refactor so cluster state cache is separate from storage of policies to avoid per cluster vs per collection interactions
+      // Need a Session that has all previous history of the original session, NOT filtered by what's present or not in Zookeeper
+      // (as does constructor Session(SolrCloudManager, Policy, Transaction)).
+      Policy.Session newSession = origSession.cloneToNewSession(delegatingManager);
+
       Map<String, Double> diskSpaceReqd = new HashMap<>();
       try {
         DocCollection coll = cloudManager.getClusterStateProvider().getCollection(collName);
@@ -151,7 +157,7 @@ public class PolicyHelper {
           }
         }
       } catch (IOException e) {
-        log.warn("Exception while reading disk free metric values for nodes to be used for collection: " + collName, e);
+        log.warn("Exception while reading disk free metric values for nodes to be used for collection: {}", collName, e);
       }
 
 
@@ -163,7 +169,7 @@ public class PolicyHelper {
         int idx = 0;
         for (Map.Entry<Replica.Type, Integer> e : typeVsCount.entrySet()) {
           for (int i = 0; i < e.getValue(); i++) {
-            Suggester suggester = session.getSuggester(ADDREPLICA)
+            Suggester suggester = newSession.getSuggester(ADDREPLICA)
                 .hint(Hint.REPLICATYPE, e.getKey())
                 .hint(Hint.COLL_SHARD, new Pair<>(collName, shardName));
             if (nodesList != null) {
@@ -178,22 +184,27 @@ public class PolicyHelper {
             if (op == null) {
               String errorId = "AutoScaling.error.diagnostics." + System.nanoTime();
               Policy.Session sessionCopy = suggester.session;
-              log.error("errorId : " + errorId + "  " +
-                  handleExp(log, "", () -> Utils.writeJson(getDiagnostics(sessionCopy), new StringWriter(), true).toString()));
+              log.error("errorId : {} {}", errorId
+                  , handleExp(log, "", () -> Utils.writeJson(getDiagnostics(sessionCopy), new StringWriter(), true).toString())); // logOk
 
               throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, " No node can satisfy the rules " +
-                  Utils.toJSONString(Utils.getDeepCopy(session.expandedClauses, 4, true) + " More details from logs in node : "
+                  Utils.toJSONString(Utils.getDeepCopy(newSession.expandedClauses, 4, true) + " More details from logs in node : "
                       + Utils.getMDCNode() + ", errorId : " + errorId));
             }
-            session = suggester.getSession();
+            newSession = suggester.getSession();
             positions.add(new ReplicaPosition(shardName, ++idx, e.getKey(), op.getParams().get(NODE)));
           }
         }
       }
+
+      // We're happy with the updated session based on the original one, so let's update what the wrapper would hand
+      // to the next computation that wants a session.
+      sessionWrapper.update(newSession);
     } finally {
       policyMapping.remove();
+      // We mark the wrapper (and its session) as being available to others.
       if (sessionWrapper != null) {
-        sessionWrapper.returnSession(session);
+        sessionWrapper.returnSession();
       }
     }
     return positions;
@@ -357,9 +368,11 @@ public class PolicyHelper {
   public static void logState(SolrCloudManager cloudManager, Suggester suggester) {
     if (log.isTraceEnabled()) {
       try {
-        log.trace("LOGSTATE: {}",
-            Utils.writeJson(loggingInfo(cloudManager.getDistribStateManager().getAutoScalingConfig().getPolicy(), cloudManager, suggester),
-                new StringWriter(), true).toString());
+        if (log.isTraceEnabled()) {
+          log.trace("LOGSTATE: {}",
+              Utils.writeJson(loggingInfo(cloudManager.getDistribStateManager().getAutoScalingConfig().getPolicy(), cloudManager, suggester),
+                  new StringWriter(), true));
+        }
       } catch (Exception e) {
         throw new RuntimeException(e);
       }
@@ -428,9 +441,12 @@ public class PolicyHelper {
       TimeSource timeSource = sessionWrapper.session != null ? sessionWrapper.session.cloudManager.getTimeSource() : TimeSource.NANO_TIME;
       synchronized (lockObj) {
         sessionWrapper.status = Status.EXECUTING;
-        log.debug("returnSession, curr-time {} sessionWrapper.createTime {}, this.sessionWrapper.createTime {} ", time(timeSource, MILLISECONDS),
-            sessionWrapper.createTime,
-            this.sessionWrapper.createTime);
+        if (log.isDebugEnabled()) {
+          log.debug("returnSession, curr-time {} sessionWrapper.createTime {}, this.sessionWrapper.createTime {} "
+              , time(timeSource, MILLISECONDS),
+              sessionWrapper.createTime,
+              this.sessionWrapper.createTime);
+        }
         if (sessionWrapper.createTime == this.sessionWrapper.createTime) {
           //this session was used for computing new operations and this can now be used for other
           // computing
@@ -464,13 +480,18 @@ public class PolicyHelper {
             return sessionWrapper;
           } else {
             //status= COMPUTING it's being used for computing. computing is
-            log.debug("session being used. waiting... current time {} ", time(timeSource, MILLISECONDS));
+            if (log.isDebugEnabled()) {
+              log.debug("session being used. waiting... current time {} ", time(timeSource, MILLISECONDS));
+            }
             try {
               lockObj.wait(10 * 1000);//wait for a max of 10 seconds
             } catch (InterruptedException e) {
               log.info("interrupted... ");
             }
-            log.debug("out of waiting curr-time:{} time-elapsed {}", time(timeSource, MILLISECONDS), timeElapsed(timeSource, waitStart, MILLISECONDS));
+            if (log.isDebugEnabled()) {
+              log.debug("out of waiting curr-time:{} time-elapsed {}"
+                  , time(timeSource, MILLISECONDS), timeElapsed(timeSource, waitStart, MILLISECONDS));
+            }
             // now this thread has woken up because it got timed out after 10 seconds or it is notified after
             // the session was returned from another COMPUTING operation
             if (this.sessionWrapper.status == Status.UNUSED || this.sessionWrapper.status == Status.EXECUTING) {
@@ -563,7 +584,7 @@ public class PolicyHelper {
       this.ref = ref;
       this.zkVersion = session == null ?
           0 :
-          session.getPolicy().zkVersion;
+          session.getPolicy().getZkVersion();
     }
 
     public Policy.Session get() {
@@ -588,16 +609,21 @@ public class PolicyHelper {
      */
     public void returnSession(Policy.Session session) {
       this.update(session);
+      this.returnSession();
+    }
+
+    /**
+     * return this for later use without updating the internal Session for cases where it's easier to update separately
+     */
+    public void returnSession() {
       refCount.incrementAndGet();
       ref.returnSession(this);
-
     }
 
     //all ops are executed now it can be destroyed
     public void release() {
       refCount.decrementAndGet();
       ref.release(this);
-
     }
   }
 }

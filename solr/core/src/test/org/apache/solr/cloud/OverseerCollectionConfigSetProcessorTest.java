@@ -204,6 +204,7 @@ public class OverseerCollectionConfigSetProcessorTest extends SolrTestCaseJ4 {
     zkControllerMock = null;
     cloudDataProviderMock = null;
     clusterStateProviderMock = null;
+    stateManagerMock = null;;
     cloudManagerMock = null;
     distribStateManagerMock = null;
     coreContainerMock = null;
@@ -309,12 +310,12 @@ public class OverseerCollectionConfigSetProcessorTest extends SolrTestCaseJ4 {
         String slice = replica.getStr(ZkStateReader.SHARD_ID_PROP);
         if (!slices.containsKey(slice)) slices.put(slice, new HashMap<>());
         String replicaName = replica.getStr(ZkStateReader.CORE_NAME_PROP);
-        slices.get(slice).put(replicaName, new Replica(replicaName, replica.getProperties()));
+        slices.get(slice).put(replicaName, new Replica(replicaName, replica.getProperties(), docCollection.getName(), slice));
       }
 
       Map<String, Slice> slicesMap = new HashMap<>();
       for (Map.Entry<String, Map<String, Replica>> entry : slices.entrySet()) {
-        slicesMap.put(entry.getKey(), new Slice(entry.getKey(), entry.getValue(), null));
+        slicesMap.put(entry.getKey(), new Slice(entry.getKey(), entry.getValue(), null,docCollection.getName()));
       }
 
       return docCollection.copyWithSlices(slicesMap);
@@ -326,8 +327,6 @@ public class OverseerCollectionConfigSetProcessorTest extends SolrTestCaseJ4 {
       
       when(zkStateReaderMock.getBaseUrlForNodeName(address)).thenAnswer(invocation -> address.replaceAll("_", "/"));
     }
-
-    when(zkStateReaderMock.getClusterProperty("legacyCloud", "false")).thenReturn("false");
 
     when(solrZkClientMock.getZkClientTimeout()).thenReturn(30000);
     
@@ -563,7 +562,7 @@ public class OverseerCollectionConfigSetProcessorTest extends SolrTestCaseJ4 {
     QueueEvent qe = new QueueEvent("id", Utils.toJSON(props), null){
       @Override
       public void setBytes(byte[] bytes) {
-        lastProcessMessageResult = SolrResponse.deserialize( bytes);
+        lastProcessMessageResult = OverseerSolrResponseSerializer.deserialize(bytes);
       }
     };
     queue.add(qe);
@@ -744,7 +743,9 @@ public class OverseerCollectionConfigSetProcessorTest extends SolrTestCaseJ4 {
         overseerMock, completedMapMock, failureMapMock);
 
 
-    log.info("clusterstate " + clusterStateMock.hashCode());
+    if (log.isInfoEnabled()) {
+      log.info("clusterstate {}", clusterStateMock.hashCode());
+    }
 
     startComponentUnderTest();
     

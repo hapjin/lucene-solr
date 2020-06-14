@@ -156,12 +156,13 @@ public class ManagedSynonymGraphFilterFactory extends BaseManagedTokenFilterFact
                     " but got "+mapping.getClass().getName());
           }
 
-          Set<String> sortedVals = new TreeSet<>();
-          sortedVals.addAll((List<String>) entry.getValue());
+          Set<String> sortedVals = new TreeSet<>((List<String>) entry.getValue());
           cpsm.mappings.put(key, sortedVals);
         }
       }
-      log.info("Loaded {} synonym mappings for {}", synonymMappings.size(), getResourceId());
+      if (log.isInfoEnabled()) {
+        log.info("Loaded {} synonym mappings for {}", synonymMappings.size(), getResourceId());
+      }
     }
 
     @SuppressWarnings("unchecked")
@@ -190,8 +191,7 @@ public class ManagedSynonymGraphFilterFactory extends BaseManagedTokenFilterFact
         if (cpsm == null)
           cpsm = new CasePreservedSynonymMappings();
 
-        Set<String> treeTerms = new TreeSet<>();
-        treeTerms.addAll(jsonList);
+        Set<String> treeTerms = new TreeSet<>(jsonList);
         cpsm.mappings.put(origTerm, treeTerms);
         madeChanges = true;
         // only add the cpsm to the synonymMappings if it has valid data
@@ -230,6 +230,7 @@ public class ManagedSynonymGraphFilterFactory extends BaseManagedTokenFilterFact
             madeChanges = true;
           }
         } else if (val instanceof List) {
+          @SuppressWarnings({"unchecked"})
           List<String> vals = (List<String>)val;
 
           if (output == null) {
@@ -378,6 +379,11 @@ public class ManagedSynonymGraphFilterFactory extends BaseManagedTokenFilterFact
 
   public ManagedSynonymGraphFilterFactory(Map<String,String> args) {
     super(args);
+  }
+
+  /** Default ctor for compatibility with SPI */
+  public ManagedSynonymGraphFilterFactory() {
+    throw defaultCtorException();
   }
 
   @Override

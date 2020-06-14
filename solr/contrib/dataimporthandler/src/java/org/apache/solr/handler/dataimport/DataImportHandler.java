@@ -36,7 +36,7 @@ import org.apache.solr.core.SolrCore;
 import org.apache.solr.core.SolrResourceLoader;
 import org.apache.solr.handler.RequestHandlerBase;
 import org.apache.solr.metrics.MetricsMap;
-import org.apache.solr.metrics.SolrMetricManager;
+import org.apache.solr.metrics.SolrMetricsContext;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.RawResponseWriter;
 import org.apache.solr.response.SolrQueryResponse;
@@ -89,8 +89,8 @@ public class DataImportHandler extends RequestHandlerBase implements
   }
 
   @Override
-  @SuppressWarnings("unchecked")
-  public void init(NamedList args) {
+
+  public void init(@SuppressWarnings({"rawtypes"})NamedList args) {
     super.init(args);
     Map<String,String> macro = new HashMap<>();
     macro.put("expandMacros", "false");
@@ -131,6 +131,7 @@ public class DataImportHandler extends RequestHandlerBase implements
       }
     }
     SolrParams params = req.getParams();
+    @SuppressWarnings({"rawtypes"})
     NamedList defaultParams = (NamedList) initArgs.get("defaults");
     RequestInfo requestParams = new RequestInfo(req, getParamsMap(params), contentStream);
     String command = requestParams.getCommand();
@@ -242,7 +243,7 @@ public class DataImportHandler extends RequestHandlerBase implements
     SolrParams reqParams = req.getParams();
     String writerClassStr = null;
     if (reqParams != null && reqParams.get(PARAM_WRITER_IMPL) != null) {
-      writerClassStr = (String) reqParams.get(PARAM_WRITER_IMPL);
+      writerClassStr = reqParams.get(PARAM_WRITER_IMPL);
     }
     DIHWriter writer;
     if (writerClassStr != null
@@ -252,6 +253,7 @@ public class DataImportHandler extends RequestHandlerBase implements
       try {
         @SuppressWarnings("unchecked")
         Class<DIHWriter> writerClass = DocBuilder.loadClass(writerClassStr, req.getCore());
+        @SuppressWarnings({"rawtypes"})
         Constructor<DIHWriter> cnstr = writerClass.getConstructor(new Class[] {
             UpdateRequestProcessor.class, SolrQueryRequest.class});
         return cnstr.newInstance((Object) processor, (Object) req);
@@ -266,7 +268,7 @@ public class DataImportHandler extends RequestHandlerBase implements
           try {
             return super.upload(document);
           } catch (RuntimeException e) {
-            log.error("Exception while adding: " + document, e);
+            log.error("Exception while adding: {}", document, e);
             return false;
           }
         }
@@ -275,8 +277,8 @@ public class DataImportHandler extends RequestHandlerBase implements
   }
 
   @Override
-  public void initializeMetrics(SolrMetricManager manager, String registryName, String tag, String scope) {
-    super.initializeMetrics(manager, registryName, tag, scope);
+  public void initializeMetrics(SolrMetricsContext parentContext, String scope) {
+    super.initializeMetrics(parentContext, scope);
     metrics = new MetricsMap((detailed, map) -> {
       if (importer != null) {
         DocBuilder.Statistics cumulative = importer.cumulativeStatistics;
@@ -299,7 +301,7 @@ public class DataImportHandler extends RequestHandlerBase implements
         map.put(DataImporter.MSG.TOTAL_DOCS_SKIPPED, cumulative.skipDocCount);
       }
     });
-    manager.registerGauge(this, registryName, metrics, tag, true, "importer", getCategory().toString(), scope);
+    solrMetricsContext.gauge(metrics, true, "importer", getCategory().toString(), scope);
   }
 
   // //////////////////////SolrInfoMBeans methods //////////////////////

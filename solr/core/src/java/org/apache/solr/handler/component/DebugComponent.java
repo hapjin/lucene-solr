@@ -37,7 +37,9 @@ import org.apache.solr.common.util.SuppressForbidden;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.search.DocList;
 import org.apache.solr.search.QueryParsing;
+import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.search.facet.FacetDebugInfo;
+import org.apache.solr.search.stats.StatsCache;
 import org.apache.solr.util.SolrPluginUtils;
 
 import static org.apache.solr.common.params.CommonParams.FQ;
@@ -74,7 +76,7 @@ public class DebugComponent extends SearchComponent
       map.put(ResponseBuilder.STAGE_DONE, "DONE");
       stages = Collections.unmodifiableMap(map);
   }
-  
+
   @Override
   public void prepare(ResponseBuilder rb) throws IOException
   {
@@ -89,15 +91,20 @@ public class DebugComponent extends SearchComponent
   public void process(ResponseBuilder rb) throws IOException
   {
     if( rb.isDebug() ) {
+      SolrQueryRequest req = rb.req;
+      StatsCache statsCache = req.getSearcher().getStatsCache();
+      req.getContext().put(SolrIndexSearcher.STATS_SOURCE, statsCache.get(req));
       DocList results = null;
       //some internal grouping requests won't have results value set
       if(rb.getResults() != null) {
         results = rb.getResults().docList;
       }
 
+      @SuppressWarnings({"rawtypes"})
       NamedList stdinfo = SolrPluginUtils.doStandardDebug( rb.req,
           rb.getQueryString(), rb.wrap(rb.getQuery()), results, rb.isDebugQuery(), rb.isDebugResults());
       
+      @SuppressWarnings({"rawtypes"})
       NamedList info = rb.getDebugInfo();
       if( info == null ) {
         rb.setDebugInfo( stdinfo );
@@ -173,6 +180,11 @@ public class DebugComponent extends SearchComponent
     // Turn on debug to get explain only when retrieving fields
     if ((sreq.purpose & ShardRequest.PURPOSE_GET_FIELDS) != 0) {
       sreq.purpose |= ShardRequest.PURPOSE_GET_DEBUG;
+      // always distribute the latest version of global stats
+      sreq.purpose |= ShardRequest.PURPOSE_SET_TERM_STATS;
+      StatsCache statsCache = rb.req.getSearcher().getStatsCache();
+      statsCache.sendGlobalStats(rb, sreq);
+
       if (rb.isDebugAll()) {
         sreq.params.set(CommonParams.DEBUG_QUERY, "true");
       } else {
@@ -215,11 +227,13 @@ public class DebugComponent extends SearchComponent
   private final static Set<String> EXCLUDE_SET = Set.of("explain");
 
   @Override
+  @SuppressWarnings({"unchecked"})
   public void finishStage(ResponseBuilder rb) {
     if (rb.isDebug() && rb.stage == ResponseBuilder.STAGE_GET_FIELDS) {
       NamedList<Object> info = rb.getDebugInfo();
       NamedList<Object> explain = new SimpleOrderedMap<>();
 
+      @SuppressWarnings({"rawtypes"})
       Map.Entry<String, Object>[]  arr =  new NamedList.NamedListEntry[rb.resultIds.size()];
       // Will be set to true if there is at least one response with PURPOSE_GET_DEBUG
       boolean hasGetDebugResponses = false;
@@ -231,11 +245,14 @@ public class DebugComponent extends SearchComponent
             // this should only happen when using shards.tolerant=true
             continue;
           }
+          @SuppressWarnings({"rawtypes"})
           NamedList sdebug = (NamedList)srsp.getSolrResponse().getResponse().get("debug");
+
           info = (NamedList)merge(sdebug, info, EXCLUDE_SET);
           if ((sreq.purpose & ShardRequest.PURPOSE_GET_DEBUG) != 0) {
             hasGetDebugResponses = true;
             if (rb.isDebugResults()) {
+              @SuppressWarnings({"rawtypes"})
               NamedList sexplain = (NamedList)sdebug.get("explain");
               SolrPluginUtils.copyNamedListIntoArrayByDocPosInResponse(sexplain, rb.resultIds, arr);
             }
@@ -296,6 +313,7 @@ public class DebugComponent extends SearchComponent
     return namedList;
   }
 
+  @SuppressWarnings({"unchecked", "rawtypes"})
   protected Object merge(Object source, Object dest, Set<String> exclude) {
     if (source == null) return dest;
     if (dest == null) {

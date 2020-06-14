@@ -162,6 +162,12 @@ public interface CommonParams {
    * Timeout value in milliseconds.  If not set, or the value is &gt;= 0, there is no timeout.
    */
   String TIME_ALLOWED = "timeAllowed";
+
+  /**
+   * The number of hits that need to be counted accurately. If more than {@link #MIN_EXACT_COUNT} documents
+   * match a query, then the value in "numFound" may be an estimate to speedup search.
+   */
+  String MIN_EXACT_COUNT = "minExactCount";
   
   /** 'true' if the header should include the handler name */
   String HEADER_ECHO_HANDLER = "echoHandler";
@@ -231,7 +237,7 @@ public interface CommonParams {
       }
       return null;
     }
-  };
+  }
 
   /** which parameters to log (if not supplied all parameters will be logged) **/
   String LOG_PARAMS_LIST = "logParamsList";
@@ -273,6 +279,7 @@ public interface CommonParams {
    * When querying a node, prefer local node's cores for distributed queries.
    * @deprecated Use {@code ShardParams.SHARDS_PREFERENCE}
    */
+  @Deprecated // SOLR-14035
   String PREFER_LOCAL_SHARDS = "preferLocalShards";
 
   String JAVABIN = "javabin";
@@ -292,6 +299,11 @@ public interface CommonParams {
   String JSON_MIME = "application/json";
 
   String JAVABIN_MIME = "application/javabin";
+
+  String FILE = "file";
+  String FILES = "files";
+
+  String CHILDDOC = "_childDocuments_";
 
 }
 

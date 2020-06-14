@@ -72,8 +72,10 @@ public class DimensionalRoutedAliasUpdateProcessorTest extends RoutedAliasUpdate
     configureCluster(4).configure();
     solrClient = getCloudSolrClient(cluster);
     //log this to help debug potential causes of problems
-    log.info("SolrClient: {}", solrClient);
-    log.info("ClusterStateProvider {}", solrClient.getClusterStateProvider());
+    if (log.isInfoEnabled()) {
+      log.info("SolrClient: {}", solrClient);
+      log.info("ClusterStateProvider {}", solrClient.getClusterStateProvider()); // logOk
+    }
   }
 
   @After
@@ -85,6 +87,7 @@ public class DimensionalRoutedAliasUpdateProcessorTest extends RoutedAliasUpdate
   @AfterClass
   public static void finish() throws Exception {
     IOUtils.close(solrClient);
+    solrClient = null;
   }
   @Test
   public void testTimeCat() throws Exception {
@@ -686,7 +689,8 @@ public class DimensionalRoutedAliasUpdateProcessorTest extends RoutedAliasUpdate
       final Object errors = resp.getResponseHeader().get("errors"); // Tolerant URP
       assertTrue(errors != null && errors.toString().contains(errorMsg));
     } catch (SolrException e) {
-      assertTrue(e.getMessage().contains(errorMsg));
+      String message = e.getMessage();
+      assertTrue("expected message to contain" + errorMsg + " but message was " + message , message.contains(errorMsg));
     }
     numDocsDeletedOrFailed++;
   }

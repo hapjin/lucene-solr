@@ -22,22 +22,24 @@ import java.lang.invoke.MethodHandles;
 import java.net.ConnectException;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.apache.solr.client.solrj.cloud.DistribStateManager;
 import org.apache.solr.client.solrj.cloud.autoscaling.AutoScalingConfig;
 import org.apache.solr.client.solrj.cloud.autoscaling.BadVersionException;
 import org.apache.solr.client.solrj.cloud.SolrCloudManager;
+import org.apache.solr.client.solrj.cloud.autoscaling.Policy;
 import org.apache.solr.client.solrj.cloud.autoscaling.TriggerEventType;
 import org.apache.solr.common.AlreadyClosedException;
 import org.apache.solr.common.SolrCloseable;
 import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.util.IOUtils;
 import org.apache.solr.common.util.Utils;
-import org.apache.solr.core.CloudConfig;
 import org.apache.solr.core.SolrResourceLoader;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -55,9 +57,13 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
 
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-  private final SolrCloudManager cloudManager;
+  public static final String MARKER_STATE = "state";
+  public static final String MARKER_ACTIVE = "active";
+  public static final String MARKER_INACTIVE = "inactive";
+  public static final int DEFAULT_AUTO_ADD_REPLICA_WAIT_FOR_SECONDS = 120;
 
-  private final CloudConfig cloudConfig;
+
+  private final SolrCloudManager cloudManager;
 
   private final ScheduledTriggers scheduledTriggers;
 
@@ -80,9 +86,8 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
 
   private AutoScalingConfig autoScalingConfig;
 
-  public OverseerTriggerThread(SolrResourceLoader loader, SolrCloudManager cloudManager, CloudConfig cloudConfig) {
+  public OverseerTriggerThread(SolrResourceLoader loader, SolrCloudManager cloudManager) {
     this.cloudManager = cloudManager;
-    this.cloudConfig = cloudConfig;
     scheduledTriggers = new ScheduledTriggers(loader, cloudManager);
     triggerFactory = new AutoScaling.TriggerFactoryImpl(loader, cloudManager);
   }
@@ -139,7 +144,8 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
           break;
         }
         AutoScalingConfig autoScalingConfig = cloudManager.getDistribStateManager().getAutoScalingConfig();
-        AutoScalingConfig updatedConfig = withAutoAddReplicasTrigger(autoScalingConfig);
+        AutoScalingConfig updatedConfig = withDefaultPolicy(autoScalingConfig);
+        updatedConfig = withAutoAddReplicasTrigger(updatedConfig);
         updatedConfig = withScheduledMaintenanceTrigger(updatedConfig);
         if (updatedConfig.equals(autoScalingConfig)) break;
         log.debug("Adding .auto_add_replicas and .scheduled_maintenance triggers");
@@ -158,8 +164,8 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
       catch (IOException | KeeperException e) {
         if (e instanceof KeeperException.SessionExpiredException ||
             (e.getCause()!=null && e.getCause() instanceof KeeperException.SessionExpiredException)) {
-          log.warn("Solr cannot talk to ZK, exiting " + 
-              getClass().getSimpleName() + " main queue loop", e);
+          log.warn("Solr cannot talk to ZK, exiting {} main queue loop"
+              , getClass().getSimpleName(), e);
           return;
         } else {
           log.error("A ZK error has occurred", e);
@@ -241,7 +247,7 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
           } catch (AlreadyClosedException e) {
 
           } catch (Exception e) {
-            log.warn("Exception initializing trigger " + entry.getKey() + ", configuration ignored", e);
+            log.warn("Exception initializing trigger {}, configuration ignored", entry.getKey(), e);
           }
         }
       } catch (AlreadyClosedException e) {
@@ -252,20 +258,31 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
           throw new IllegalStateException("Caught AlreadyClosedException from ScheduledTriggers, but we're not closed yet!", e);
         }
       }
-      log.debug("-- cleaning old nodeLost / nodeAdded markers");
-      removeMarkers(ZkStateReader.SOLR_AUTOSCALING_NODE_LOST_PATH);
-      removeMarkers(ZkStateReader.SOLR_AUTOSCALING_NODE_ADDED_PATH);
+      log.debug("-- deactivating old nodeLost / nodeAdded markers");
+      deactivateMarkers(ZkStateReader.SOLR_AUTOSCALING_NODE_LOST_PATH);
+      deactivateMarkers(ZkStateReader.SOLR_AUTOSCALING_NODE_ADDED_PATH);
       processedZnodeVersion = znodeVersion;
     }
   }
 
-  private void removeMarkers(String path) {
+  private void deactivateMarkers(String path) {
+    DistribStateManager stateManager = cloudManager.getDistribStateManager();
     try {
-      cloudManager.getDistribStateManager().removeRecursively(path, true, false);
+      List<String> markers = stateManager.listData(path);
+      for (String marker : markers) {
+        String markerPath = path + "/" + marker;
+        try {
+          Map<String, Object> markerMap = new HashMap<>(Utils.getJson(stateManager, markerPath));
+          markerMap.put(MARKER_STATE, MARKER_INACTIVE);
+          stateManager.setData(markerPath, Utils.toJSON(markerMap), -1);
+        } catch (NoSuchElementException e) {
+          // ignore - already deleted
+        }
+      }
     } catch (NoSuchElementException e) {
       // ignore
     } catch (Exception e) {
-      log.warn("Error removing old markers", e);
+      log.warn("Error deactivating old markers", e);
     }
   }
 
@@ -299,7 +316,9 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
         return;
       }
       AutoScalingConfig currentConfig = cloudManager.getDistribStateManager().getAutoScalingConfig(watcher);
-      log.debug("Refreshing {} with znode version {}", ZkStateReader.SOLR_AUTOSCALING_CONF_PATH, currentConfig.getZkVersion());
+      if (log.isDebugEnabled()) {
+        log.debug("Refreshing {} with znode version {}", ZkStateReader.SOLR_AUTOSCALING_CONF_PATH, currentConfig.getZkVersion());
+      }
       if (znodeVersion >= currentConfig.getZkVersion()) {
         // protect against reordered watcher fires by ensuring that we only move forward
         return;
@@ -328,6 +347,15 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
     }
   }
 
+  private AutoScalingConfig withDefaultPolicy(AutoScalingConfig autoScalingConfig) {
+    Policy policy = autoScalingConfig.getPolicy();
+    if (policy.hasEmptyClusterPolicy()) {
+      policy = policy.withClusterPolicy(Policy.DEFAULT_CLUSTER_POLICY);
+      autoScalingConfig = autoScalingConfig.withPolicy(policy);
+    }
+    return autoScalingConfig;
+  }
+
   private AutoScalingConfig withAutoAddReplicasTrigger(AutoScalingConfig autoScalingConfig) {
     Map<String, Object> triggerProps = AutoScaling.AUTO_ADD_REPLICAS_TRIGGER_PROPS;
     return withDefaultTrigger(triggerProps, autoScalingConfig);
@@ -348,7 +376,7 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
       }
     }
     // need to add
-    triggerProps.computeIfPresent("waitFor", (k, v) -> (long) (cloudConfig.getAutoReplicaFailoverWaitAfterExpiration() / 1000));
+    triggerProps.computeIfPresent("waitFor", (k, v) -> (long) (DEFAULT_AUTO_ADD_REPLICA_WAIT_FOR_SECONDS));
     AutoScalingConfig.TriggerConfig config = new AutoScalingConfig.TriggerConfig(triggerName, triggerProps);
     autoScalingConfig = autoScalingConfig.withTriggerConfig(config);
     // need to add SystemLogListener explicitly here
@@ -371,7 +399,7 @@ public class OverseerTriggerThread implements Runnable, SolrCloseable {
       try {
         triggerMap.put(triggerName, triggerFactory.create(eventType, triggerName, cfg.properties));
       } catch (TriggerValidationException e) {
-        log.warn("Error in trigger '" + triggerName + "' configuration, trigger config ignored: " + cfg, e);
+        log.warn("Error in trigger '{}' configuration, trigger config ignored: {}", triggerName, cfg, e);
       }
     }
     return triggerMap;

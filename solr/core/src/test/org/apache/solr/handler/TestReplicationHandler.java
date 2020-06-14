@@ -40,22 +40,29 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.util.Constants;
 import org.apache.lucene.util.LuceneTestCase.Slow;
 import org.apache.lucene.util.TestUtil;
+
 import org.apache.solr.BaseDistributedSearchTestCase;
 import org.apache.solr.SolrTestCaseJ4;
 import org.apache.solr.SolrTestCaseJ4.SuppressSSL;
 import org.apache.solr.client.solrj.SolrClient;
+import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.embedded.JettyConfig;
 import org.apache.solr.client.solrj.embedded.JettySolrRunner;
 import org.apache.solr.client.solrj.impl.HttpSolrClient;
+import org.apache.solr.client.solrj.request.GenericSolrRequest;
 import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.client.solrj.request.UpdateRequest;
+import org.apache.solr.client.solrj.response.SimpleSolrResponse;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.client.solrj.response.UpdateResponse;
 import org.apache.solr.common.SolrDocument;
@@ -103,7 +110,7 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
       + File.separator;
 
   JettySolrRunner masterJetty, slaveJetty, repeaterJetty;
-  SolrClient masterClient, slaveClient, repeaterClient;
+  HttpSolrClient masterClient, slaveClient, repeaterClient;
   SolrInstance master = null, slave = null, repeater = null;
 
   static String context = "/solr";
@@ -178,7 +185,7 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
     return jetty;
   }
 
-  static SolrClient createNewSolrClient(int port) {
+  static HttpSolrClient createNewSolrClient(int port) {
     try {
       // setup the client...
       final String baseUrl = buildUrl(port) + "/" + DEFAULT_TEST_CORENAME;
@@ -214,12 +221,14 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
     NamedList res = query(query, client);
     while (expectedDocCount != numFound(res)
            && timeSlept < 30000) {
-      log.info("Waiting for " + expectedDocCount + " docs");
+      log.info("Waiting for {} docs", expectedDocCount);
       timeSlept += 100;
       Thread.sleep(100);
       res = query(query, client);
     }
-    log.info("Waited for {}ms and found {} docs", timeSlept, numFound(res));
+    if (log.isInfoEnabled()) {
+      log.info("Waited for {}ms and found {} docs", timeSlept, numFound(res));
+    }
     return res;
   }
   
@@ -323,7 +332,7 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
         List replicatedAtCount = (List) ((NamedList) details.get("slave")).get("indexReplicatedAtList");
         int tries = 0;
         while ((replicatedAtCount == null || replicatedAtCount.size() < i) && tries++ < 5) {
-          Thread.currentThread().sleep(1000);
+          Thread.sleep(1000);
           details = getDetails(slaveClient);
           replicatedAtCount = (List) ((NamedList) details.get("slave")).get("indexReplicatedAtList");
         }
@@ -698,7 +707,9 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
           assertEquals(1, Integer.parseInt(getStringOrNull(slaveDetails,"timesIndexReplicated")) - failed);
           break;
         } catch (NumberFormatException | AssertionError notYet) {
-          log.info((retries+1)+"th attempt failure on " + notYet+" details are "+slaveDetails);
+          if (log.isInfoEnabled()) {
+            log.info("{}th attempt failure on {} details are {}", retries + 1, notYet, slaveDetails); // logOk
+          }
           if (retries>9) {
             log.error("giving up: ", notYet);
             throw notYet;
@@ -1500,7 +1511,8 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
     long timeTakenInSeconds = TimeUnit.SECONDS.convert(timeTaken, TimeUnit.NANOSECONDS);
 
     //Let's make sure it took more than approximateTimeInSeconds to make sure that it was throttled
-    log.info("approximateTimeInSeconds = " + approximateTimeInSeconds + " timeTakenInSeconds = " + timeTakenInSeconds);
+    log.info("approximateTimeInSeconds = {} timeTakenInSeconds = {}"
+        , approximateTimeInSeconds, timeTakenInSeconds);
     assertTrue(timeTakenInSeconds - approximateTimeInSeconds > 0);
   }
 
@@ -1572,6 +1584,58 @@ public class TestReplicationHandler extends SolrTestCaseJ4 {
     assertEquals(SolrException.ErrorCode.BAD_REQUEST.code, thrown.code());
     assertThat(thrown.getMessage(), containsString("Missing required parameter: name"));
   }
+
+  @Test
+  public void testEmptyBackups() throws Exception {
+    final File backupDir = createTempDir().toFile();
+    final BackupStatusChecker backupStatus = new BackupStatusChecker(masterClient);
+    
+    { // initial request w/o any committed docs
+      final String backupName = "empty_backup1";
+      final GenericSolrRequest req = new GenericSolrRequest
+        (SolrRequest.METHOD.GET, "/replication",
+         params("command", "backup",
+                "location", backupDir.getAbsolutePath(),
+                "name", backupName));
+      final TimeOut timeout = new TimeOut(30, TimeUnit.SECONDS, TimeSource.NANO_TIME);
+      final SimpleSolrResponse rsp = req.process(masterClient);
+
+      final String dirName = backupStatus.waitForBackupSuccess(backupName, timeout);
+      assertEquals("Did not get expected dir name for backup, did API change?",
+                   "snapshot.empty_backup1", dirName);
+      assertTrue(dirName + " doesn't exist in expected location for backup " + backupName,
+                 new File(backupDir, dirName).exists());
+    }
+    
+    index(masterClient, "id", "1", "name", "foo");
+    
+    { // second backup w/uncommited doc
+      final String backupName = "empty_backup2";
+      final GenericSolrRequest req = new GenericSolrRequest
+        (SolrRequest.METHOD.GET, "/replication",
+         params("command", "backup",
+                "location", backupDir.getAbsolutePath(),
+                "name", backupName));
+      final TimeOut timeout = new TimeOut(30, TimeUnit.SECONDS, TimeSource.NANO_TIME);
+      final SimpleSolrResponse rsp = req.process(masterClient);
+      
+      final String dirName = backupStatus.waitForBackupSuccess(backupName, timeout);
+      assertEquals("Did not get expected dir name for backup, did API change?",
+                   "snapshot.empty_backup2", dirName);
+      assertTrue(dirName + " doesn't exist in expected location for backup " + backupName,
+                 new File(backupDir, dirName).exists());
+    }
+
+    // confirm backups really are empty
+    for (int i = 1; i <=2; i++) {
+      final String name = "snapshot.empty_backup"+i;
+      try (Directory dir = new NIOFSDirectory(new File(backupDir, name).toPath());
+           IndexReader reader = DirectoryReader.open(dir)) {
+        assertEquals(name + " is not empty", 0, reader.numDocs());
+      }
+    }
+  }
+  
   
   private class AddExtraDocs implements Runnable {
 

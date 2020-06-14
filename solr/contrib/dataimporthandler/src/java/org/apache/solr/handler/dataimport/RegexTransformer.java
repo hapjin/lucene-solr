@@ -43,7 +43,7 @@ public class RegexTransformer extends Transformer {
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
   @Override
-  @SuppressWarnings("unchecked")
+  @SuppressWarnings({"unchecked", "rawtypes"})
   public Map<String, Object> transformRow(Map<String, Object> row,
                                           Context ctx) {
     List<Map<String, String>> fields = ctx.getAllEntityFields();
@@ -131,12 +131,11 @@ public class RegexTransformer extends Transformer {
   @SuppressWarnings("unchecked")
   private List<String> readBySplit(String splitBy, String value) {
     String[] vals = value.split(splitBy);
-    List<String> l = new ArrayList<>();
-    l.addAll(Arrays.asList(vals));
+    List<String> l = new ArrayList<>(Arrays.asList(vals));
     return l;
   }
 
-  @SuppressWarnings("unchecked")
+  @SuppressWarnings({"unchecked", "rawtypes"})
   private Object readfromRegExp(String reStr, String value, String columnName, String gNames) {
     String[] groupNames = null;
     if(gNames != null && gNames.trim().length() >0){
@@ -166,7 +165,7 @@ public class RegexTransformer extends Transformer {
               }
             }
           } catch (Exception e) {
-            log.warn("Parsing failed for field : " + columnName, e);
+            log.warn("Parsing failed for field : {}", columnName, e);
           }
         }
         return l == null ? map: l;

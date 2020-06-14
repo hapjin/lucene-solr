@@ -17,6 +17,7 @@
 
 package org.apache.solr.cloud.autoscaling;
 
+import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -36,10 +37,15 @@ import org.apache.solr.common.SolrException;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.params.CollectionParams;
+import org.apache.solr.common.util.Utils;
 import org.apache.solr.core.SolrResourceLoader;
+import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.solr.cloud.autoscaling.OverseerTriggerThread.MARKER_ACTIVE;
+import static org.apache.solr.cloud.autoscaling.OverseerTriggerThread.MARKER_INACTIVE;
+import static org.apache.solr.cloud.autoscaling.OverseerTriggerThread.MARKER_STATE;
 import static org.apache.solr.common.params.AutoScalingParams.PREFERRED_OP;
 import static org.apache.solr.common.params.AutoScalingParams.REPLICA_TYPE;
 
@@ -71,6 +77,16 @@ public class NodeAddedTrigger extends TriggerBase {
     try {
       List<String> added = stateManager.listData(ZkStateReader.SOLR_AUTOSCALING_NODE_ADDED_PATH);
       added.forEach(n -> {
+        String markerPath = ZkStateReader.SOLR_AUTOSCALING_NODE_ADDED_PATH + "/" + n;
+        try {
+          Map<String, Object> markerData = Utils.getJson(stateManager, markerPath);
+          // skip inactive markers
+          if (markerData.getOrDefault(MARKER_STATE, MARKER_ACTIVE).equals(MARKER_INACTIVE)) {
+            return;
+          }
+        } catch (InterruptedException | IOException | KeeperException e) {
+          log.debug("-- ignoring marker {} state due to error{}", markerPath, e);
+        }
         // don't add nodes that have since gone away
         if (lastLiveNodes.contains(n) && !nodeNameVsTimeAdded.containsKey(n)) {
           // since {@code #restoreState(AutoScaling.Trigger)} is called first, the timeAdded for a node may also be restored
@@ -137,10 +153,12 @@ public class NodeAddedTrigger extends TriggerBase {
   protected void setState(Map<String, Object> state) {
     this.lastLiveNodes.clear();
     this.nodeNameVsTimeAdded.clear();
+    @SuppressWarnings({"unchecked"})
     Collection<String> lastLiveNodes = (Collection<String>)state.get("lastLiveNodes");
     if (lastLiveNodes != null) {
       this.lastLiveNodes.addAll(lastLiveNodes);
     }
+    @SuppressWarnings({"unchecked"})
     Map<String,Long> nodeNameVsTimeAdded = (Map<String,Long>)state.get("nodeNameVsTimeAdded");
     if (nodeNameVsTimeAdded != null) {
       this.nodeNameVsTimeAdded.putAll(nodeNameVsTimeAdded);
@@ -159,7 +177,9 @@ public class NodeAddedTrigger extends TriggerBase {
       log.debug("Running NodeAddedTrigger {}", name);
 
       Set<String> newLiveNodes = new HashSet<>(cloudManager.getClusterStateProvider().getLiveNodes());
-      log.debug("Found livenodes: {}", newLiveNodes.size());
+      if (log.isDebugEnabled()) {
+        log.debug("Found livenodes: {}", newLiveNodes.size());
+      }
 
       // have any nodes that we were tracking been removed from the cluster?
       // if so, remove them from the tracking map
@@ -191,8 +211,10 @@ public class NodeAddedTrigger extends TriggerBase {
       AutoScaling.TriggerEventProcessor processor = processorRef.get();
       if (!nodeNames.isEmpty()) {
         if (processor != null) {
-          log.debug("NodeAddedTrigger {} firing registered processor for nodes: {} added at times {}, now={}", name,
-              nodeNames, times, cloudManager.getTimeSource().getTimeNs());
+          if (log.isDebugEnabled()) {
+            log.debug("NodeAddedTrigger {} firing registered processor for nodes: {} added at times {}, now={}", name,
+                nodeNames, times, cloudManager.getTimeSource().getTimeNs());
+          }
           if (processor.process(new NodeAddedEvent(getEventType(), getName(), times, nodeNames, preferredOp, replicaType))) {
             // remove from tracking set only if the fire was accepted
             nodeNames.forEach(n -> {

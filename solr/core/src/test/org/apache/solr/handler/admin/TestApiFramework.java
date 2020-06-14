@@ -27,9 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.solr.SolrTestCaseJ4;
-import org.apache.solr.api.AnnotatedApi;
 import org.apache.solr.api.Api;
 import org.apache.solr.api.ApiBag;
 import org.apache.solr.api.Command;
@@ -37,6 +35,7 @@ import org.apache.solr.api.EndPoint;
 import org.apache.solr.api.V2HttpCall;
 import org.apache.solr.api.V2HttpCall.CompositeApi;
 import org.apache.solr.client.solrj.SolrRequest;
+import org.apache.solr.common.annotation.JsonProperty;
 import org.apache.solr.common.params.MapSolrParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
@@ -168,15 +167,14 @@ public class TestApiFramework extends SolrTestCaseJ4 {
 
   }
 
-  public void testPayload() throws IOException {
+  public void testPayload() {
     String json = "{package:pkg1, version: '0.1', files  :[a.jar, b.jar]}";
     Utils.fromJSONString(json);
 
     ApiBag apiBag = new ApiBag(false);
-    AnnotatedApi api = new AnnotatedApi(new ApiTest());
-    apiBag.register(api, Collections.emptyMap());
+    List<Api> apis =  apiBag.registerObject(new ApiTest());
 
-    ValidatingJsonMap spec = api.getSpec();
+    ValidatingJsonMap spec = apis.get(0).getSpec();
 
     assertEquals("POST", spec._getStr("/methods[0]",null) );
     assertEquals("POST", spec._getStr("/methods[0]",null) );
@@ -213,8 +211,6 @@ public class TestApiFramework extends SolrTestCaseJ4 {
 
     }
 
-
-
   }
 
   public static class AddVersion {
@@ -228,10 +224,17 @@ public class TestApiFramework extends SolrTestCaseJ4 {
 
   public void testAnnotatedApi() {
     ApiBag apiBag = new ApiBag(false);
-    apiBag.register(new AnnotatedApi(new DummyTest()), Collections.emptyMap());
+    apiBag.registerObject(new DummyTest());
     SolrQueryResponse rsp = v2ApiInvoke(apiBag, "/node/filestore/package/mypkg/jar1.jar", "GET",
         new ModifiableSolrParams(), null);
     assertEquals("/package/mypkg/jar1.jar", rsp.getValues().get("path"));
+
+    apiBag = new ApiBag(false);
+    apiBag.registerObject(new DummyTest1());
+    rsp = v2ApiInvoke(apiBag, "/node/filestore/package/mypkg/jar1.jar", "GET",
+        new ModifiableSolrParams(), null);
+    assertEquals("/package/mypkg/jar1.jar", rsp.getValues().get("path"));
+
   }
 
   @EndPoint(
@@ -240,6 +243,18 @@ public class TestApiFramework extends SolrTestCaseJ4 {
       permission = PermissionNameProvider.Name.ALL)
   public class DummyTest {
     @Command
+    public void read(SolrQueryRequest req, SolrQueryResponse rsp) {
+      rsp.add("FSRead.called", "true");
+      rsp.add("path", req.getPathTemplateValues().get("*"));
+    }
+  }
+
+
+  public class DummyTest1 {
+    @EndPoint(
+        path = "/node/filestore/*",
+        method = SolrRequest.METHOD.GET,
+        permission = PermissionNameProvider.Name.ALL)
     public void read(SolrQueryRequest req, SolrQueryResponse rsp) {
       rsp.add("FSRead.called", "true");
       rsp.add("path", req.getPathTemplateValues().get("*"));

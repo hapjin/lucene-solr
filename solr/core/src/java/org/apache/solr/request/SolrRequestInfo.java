@@ -59,7 +59,7 @@ public class SolrRequestInfo {
     // TODO: temporary sanity check... this can be changed to just an assert in the future
     SolrRequestInfo prev = threadLocal.get();
     if (prev != null) {
-      log.error("Previous SolrRequestInfo was not closed!  req=" + prev.req.getOriginalParams().toString());
+      log.error("Previous SolrRequestInfo was not closed!  req={}", prev.req.getOriginalParams());
       log.error("prev == info : {}", prev.req == info.req, new RuntimeException());
     }
     assert prev == null;
@@ -172,13 +172,15 @@ public class SolrRequestInfo {
   public static ExecutorUtil.InheritableThreadLocalProvider getInheritableThreadLocalProvider() {
     return new ExecutorUtil.InheritableThreadLocalProvider() {
       @Override
-      public void store(AtomicReference ctx) {
+      @SuppressWarnings({"unchecked"})
+      public void store(@SuppressWarnings({"rawtypes"})AtomicReference ctx) {
         SolrRequestInfo me = SolrRequestInfo.getRequestInfo();
         if (me != null) ctx.set(me);
       }
 
       @Override
-      public void set(AtomicReference ctx) {
+      @SuppressWarnings({"unchecked"})
+      public void set(@SuppressWarnings({"rawtypes"})AtomicReference ctx) {
         SolrRequestInfo me = (SolrRequestInfo) ctx.get();
         if (me != null) {
           ctx.set(null);
@@ -187,7 +189,7 @@ public class SolrRequestInfo {
       }
 
       @Override
-      public void clean(AtomicReference ctx) {
+      public void clean(@SuppressWarnings({"rawtypes"})AtomicReference ctx) {
         SolrRequestInfo.clearRequestInfo();
       }
     };

@@ -38,6 +38,7 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.common.util.CommonTestInjection;
 import org.apache.solr.common.util.NamedList;
 import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.common.util.StrUtils;
@@ -48,7 +49,6 @@ import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.security.AuthorizationContext;
 import org.apache.solr.security.PermissionNameProvider;
-import org.apache.solr.util.TestInjection;
 import org.apache.solr.util.stats.MetricUtils;
 
 /**
@@ -70,7 +70,7 @@ public class MetricsHandler extends RequestHandlerBase implements PermissionName
 
   private static final Pattern KEY_REGEX = Pattern.compile("(?<!" + Pattern.quote("\\") + ")" + Pattern.quote(":"));
   private CoreContainer cc;
-  private final Map<String, String> injectedSysProps = TestInjection.injectAdditionalProps();
+  private final Map<String, String> injectedSysProps = CommonTestInjection.injectAdditionalProps();
 
   public MetricsHandler() {
     this.metricManager = null;
@@ -103,6 +103,7 @@ public class MetricsHandler extends RequestHandlerBase implements PermissionName
     handleRequest(req.getParams(), (k, v) -> rsp.add(k, v));
   }
   
+  @SuppressWarnings({"unchecked"})
   public void handleRequest(SolrParams params, BiConsumer<String, Object> consumer) throws Exception {
     boolean compact = params.getBool(COMPACT_PARAM, true);
     String[] keys = params.getParams(KEY_PARAM);
@@ -116,9 +117,11 @@ public class MetricsHandler extends RequestHandlerBase implements PermissionName
     List<MetricFilter> metricFilters = metricTypes.stream().map(MetricType::asMetricFilter).collect(Collectors.toList());
     Set<String> requestedRegistries = parseRegistries(params);
 
+    @SuppressWarnings({"rawtypes"})
     NamedList response = new SimpleOrderedMap();
     for (String registryName : requestedRegistries) {
       MetricRegistry registry = metricManager.registry(registryName);
+      @SuppressWarnings({"rawtypes"})
       SimpleOrderedMap result = new SimpleOrderedMap();
       MetricUtils.toMaps(registry, metricFilters, mustMatchFilter, propertyFilter, false,
           false, compact, false, (k, v) -> result.add(k, v));
@@ -129,6 +132,7 @@ public class MetricsHandler extends RequestHandlerBase implements PermissionName
     consumer.accept("metrics", response);
   }
 
+  @SuppressWarnings({"unchecked", "rawtypes"})
   public void handleKeyRequest(String[] keys, BiConsumer<String, Object> consumer) throws Exception {
     SimpleOrderedMap result = new SimpleOrderedMap();
     SimpleOrderedMap errors = new SimpleOrderedMap();
@@ -345,9 +349,10 @@ public class MetricsHandler extends RequestHandlerBase implements PermissionName
 
     public static final String SUPPORTED_TYPES_MSG = EnumSet.allOf(MetricType.class).toString();
 
+    @SuppressWarnings({"rawtypes"})
     private final Class klass;
 
-    MetricType(Class klass) {
+    MetricType(@SuppressWarnings({"rawtypes"})Class klass) {
       this.klass = klass;
     }
 

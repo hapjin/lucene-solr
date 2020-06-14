@@ -53,6 +53,7 @@ import org.apache.solr.schema.IndexSchemaFactory;
 import org.apache.solr.schema.SchemaField;
 import org.apache.solr.search.DocIterator;
 import org.apache.solr.search.DocList;
+import org.apache.solr.util.BaseTestHarness;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -231,7 +232,7 @@ public class BasicFunctionalityTest extends SolrTestCaseJ4 {
             ,"//*[@numFound='0']"
             );
     
-    assertU(h.simpleTag("rollback"));
+    assertU(BaseTestHarness.simpleTag("rollback"));
     assertU(commit());
   }
 
@@ -1017,7 +1018,7 @@ public class BasicFunctionalityTest extends SolrTestCaseJ4 {
                  e.getMessage().contains(f));
     }
   }
-
+  
 //   /** this doesn't work, but if it did, this is how we'd test it. */
 //   public void testOverwriteFalse() {
 

@@ -48,6 +48,8 @@ import org.apache.solr.client.solrj.io.stream.metrics.CountMetric;
 import org.apache.solr.client.solrj.io.stream.metrics.MaxMetric;
 import org.apache.solr.client.solrj.io.stream.metrics.MeanMetric;
 import org.apache.solr.client.solrj.io.stream.metrics.MinMetric;
+import org.apache.solr.client.solrj.io.stream.metrics.PercentileMetric;
+import org.apache.solr.client.solrj.io.stream.metrics.StdMetric;
 import org.apache.solr.client.solrj.io.stream.metrics.SumMetric;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.request.UpdateRequest;
@@ -55,7 +57,7 @@ import org.apache.solr.cloud.SolrCloudTestCase;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.core.CoreDescriptor;
-import org.apache.solr.core.SolrResourceLoader;
+import org.apache.solr.core.SolrPaths;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -662,13 +664,25 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       SolrStream solrStream = new SolrStream(jetty.getBaseUrl().toString() + "/collection1", sParams);
       List<Tuple> tuples4 = getTuples(solrStream);
       assert (tuples4.size() == 1);
+      //Assert no x-axis
+      assertNull(tuples4.get(0).get("x"));
+
 
       sParams = new ModifiableSolrParams(StreamingTest.mapParams(CommonParams.QT, "/stream"));
-      sParams.add("expr", "random(" + COLLECTIONORALIAS + ", q=\"*:*\", rows=\"10001\", fl=\"id, a_i\")");
+      sParams.add("expr", "random(" + COLLECTIONORALIAS + ")");
       jetty = cluster.getJettySolrRunner(0);
       solrStream = new SolrStream(jetty.getBaseUrl().toString() + "/collection1", sParams);
       tuples4 = getTuples(solrStream);
-      assert (tuples4.size() == 1000);
+      assert(tuples4.size() == 500);
+      Map fields = tuples4.get(0).getFields();
+      assert(fields.containsKey("id"));
+      assert(fields.containsKey("a_f"));
+      assert(fields.containsKey("a_i"));
+      assert(fields.containsKey("a_s"));
+      //Assert the x-axis:
+      for(int i=0; i<tuples4.size(); i++) {
+        assertEquals(tuples4.get(i).getLong("x").longValue(), i);
+      }
 
     } finally {
       cache.close();
@@ -750,7 +764,9 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     .withFunctionName("min", MinMetric.class)
     .withFunctionName("max", MaxMetric.class)
     .withFunctionName("avg", MeanMetric.class)
-    .withFunctionName("count", CountMetric.class);
+    .withFunctionName("count", CountMetric.class)
+    .withFunctionName("std", StdMetric.class)
+    .withFunctionName("per", PercentileMetric.class);
 
     StreamExpression expression;
     TupleStream stream;
@@ -759,7 +775,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     SolrClientCache cache = new SolrClientCache();
     try {
       streamContext.setSolrClientCache(cache);
-      String expr = "stats(" + COLLECTIONORALIAS + ", q=*:*, sum(a_i), sum(a_f), min(a_i), min(a_f), max(a_i), max(a_f), avg(a_i), avg(a_f), count(*))";
+      String expr = "stats(" + COLLECTIONORALIAS + ", q=*:*, sum(a_i), sum(a_f), min(a_i), min(a_f), max(a_i), max(a_f), avg(a_i), avg(a_f), std(a_i), std(a_f), per(a_i, 50), per(a_f, 50), count(*))";
       expression = StreamExpressionParser.parse(expr);
       stream = factory.constructStream(expression);
       stream.setStreamContext(streamContext);
@@ -780,6 +796,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       Double maxf = tuple.getDouble("max(a_f)");
       Double avgi = tuple.getDouble("avg(a_i)");
       Double avgf = tuple.getDouble("avg(a_f)");
+      Double stdi = tuple.getDouble("std(a_i)");
+      Double stdf = tuple.getDouble("std(a_f)");
+      Double peri = tuple.getDouble("per(a_i,50)");
+      Double perf = tuple.getDouble("per(a_f,50)");
       Double count = tuple.getDouble("count(*)");
 
       assertTrue(sumi.longValue() == 70);
@@ -790,12 +810,59 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       assertTrue(maxf.doubleValue() == 10.0D);
       assertTrue(avgi.doubleValue() == 7.0D);
       assertTrue(avgf.doubleValue() == 5.5D);
+      assertTrue(stdi.doubleValue() == 5.477225575051661D);
+      assertTrue(stdf.doubleValue() == 3.0276503540974917D);
+      assertTrue(peri.doubleValue() == 7.0D);
+      assertTrue(perf.doubleValue() == 5.5D);
       assertTrue(count.doubleValue() == 10);
 
 
+      //Test without query
+
+      expr = "stats(" + COLLECTIONORALIAS + ", sum(a_i), sum(a_f), min(a_i), min(a_f), max(a_i), max(a_f), avg(a_i), avg(a_f), std(a_i), std(a_f), per(a_i, 50), per(a_f, 50), count(*))";
+      expression = StreamExpressionParser.parse(expr);
+      stream = factory.constructStream(expression);
+      stream.setStreamContext(streamContext);
+
+      tuples = getTuples(stream);
+
+      assert (tuples.size() == 1);
+
+      //Test Long and Double Sums
+
+      tuple = tuples.get(0);
+
+      sumi = tuple.getDouble("sum(a_i)");
+      sumf = tuple.getDouble("sum(a_f)");
+      mini = tuple.getDouble("min(a_i)");
+      minf = tuple.getDouble("min(a_f)");
+      maxi = tuple.getDouble("max(a_i)");
+      maxf = tuple.getDouble("max(a_f)");
+      avgi = tuple.getDouble("avg(a_i)");
+      avgf = tuple.getDouble("avg(a_f)");
+      stdi = tuple.getDouble("std(a_i)");
+      stdf = tuple.getDouble("std(a_f)");
+      peri = tuple.getDouble("per(a_i,50)");
+      perf = tuple.getDouble("per(a_f,50)");
+      count = tuple.getDouble("count(*)");
+
+      assertTrue(sumi.longValue() == 70);
+      assertTrue(sumf.doubleValue() == 55.0D);
+      assertTrue(mini.doubleValue() == 0.0D);
+      assertTrue(minf.doubleValue() == 1.0D);
+      assertTrue(maxi.doubleValue() == 14.0D);
+      assertTrue(maxf.doubleValue() == 10.0D);
+      assertTrue(avgi.doubleValue() == 7.0D);
+      assertTrue(avgf.doubleValue() == 5.5D);
+      assertTrue(stdi.doubleValue() == 5.477225575051661D);
+      assertTrue(stdf.doubleValue() == 3.0276503540974917D);
+      assertTrue(peri.doubleValue() == 7.0D);
+      assertTrue(perf.doubleValue() == 5.5D);
+      assertTrue(count.doubleValue() == 10);
+
       //Test with shards parameter
       List<String> shardUrls = TupleStream.getShards(cluster.getZkServer().getZkAddress(), COLLECTIONORALIAS, streamContext);
-      expr = "stats(myCollection, q=*:*, sum(a_i), sum(a_f), min(a_i), min(a_f), max(a_i), max(a_f), avg(a_i), avg(a_f), count(*))";
+      expr = "stats(myCollection, q=*:*, sum(a_i), sum(a_f), min(a_i), min(a_f), max(a_i), max(a_f), avg(a_i), avg(a_f), std(a_i), std(a_f), per(a_i, 50), per(a_f, 50), count(*))";
       Map<String, List<String>> shardsMap = new HashMap();
       shardsMap.put("myCollection", shardUrls);
       StreamContext context = new StreamContext();
@@ -820,6 +887,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       maxf = tuple.getDouble("max(a_f)");
       avgi = tuple.getDouble("avg(a_i)");
       avgf = tuple.getDouble("avg(a_f)");
+      stdi = tuple.getDouble("std(a_i)");
+      stdf = tuple.getDouble("std(a_f)");
+      peri = tuple.getDouble("per(a_i,50)");
+      perf = tuple.getDouble("per(a_f,50)");
       count = tuple.getDouble("count(*)");
 
       assertTrue(sumi.longValue() == 70);
@@ -830,6 +901,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       assertTrue(maxf.doubleValue() == 10.0D);
       assertTrue(avgi.doubleValue() == 7.0D);
       assertTrue(avgf.doubleValue() == 5.5D);
+      assertTrue(stdi.doubleValue() == 5.477225575051661D);
+      assertTrue(stdf.doubleValue() == 3.0276503540974917D);
+      assertTrue(peri.doubleValue() == 7.0D);
+      assertTrue(perf.doubleValue() == 5.5D);
       assertTrue(count.doubleValue() == 10);
 
       //Execersise the /stream hander
@@ -939,7 +1014,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
 
 
     paramsLoc = new ModifiableSolrParams();
-    expr = "facet2D(collection1, q=\"*:*\", x=\"diseases_s\", y=\"symptoms_s\", dimensions=\"3,1\")";
+    expr = "facet2D(collection1, x=\"diseases_s\", y=\"symptoms_s\", dimensions=\"3,1\")";
     paramsLoc.set("expr", expr);
     paramsLoc.set("qt", "/stream");
 
@@ -1088,6 +1163,8 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       .withFunctionName("min", MinMetric.class)
       .withFunctionName("max", MaxMetric.class)
       .withFunctionName("avg", MeanMetric.class)
+      .withFunctionName("std", StdMetric.class)
+      .withFunctionName("per", PercentileMetric.class)
       .withFunctionName("count", CountMetric.class);
 
     // Basic test
@@ -1103,6 +1180,8 @@ public class StreamExpressionTest extends SolrCloudTestCase {
               +   "min(a_i), min(a_f), "
               +   "max(a_i), max(a_f), "
               +   "avg(a_i), avg(a_f), "
+              +   "std(a_i), std(a_f),"
+              +   "per(a_i, 50), per(a_f, 50),"
               +   "count(*)"
               + ")";
 
@@ -1111,7 +1190,6 @@ public class StreamExpressionTest extends SolrCloudTestCase {
 
     assert(tuples.size() == 3);
 
-    //Test Long and Double Sums
 
     Tuple tuple = tuples.get(0);
     String bucket = tuple.getString("a_s");
@@ -1123,6 +1201,12 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     Double maxf = tuple.getDouble("max(a_f)");
     Double avgi = tuple.getDouble("avg(a_i)");
     Double avgf = tuple.getDouble("avg(a_f)");
+    Double stdi = tuple.getDouble("std(a_i)");
+    Double stdf = tuple.getDouble("std(a_f)");
+    Double peri = tuple.getDouble("per(a_i,50)");
+    Double perf = tuple.getDouble("per(a_f,50)");
+
+
     Double count = tuple.getDouble("count(*)");
 
     assertTrue(bucket.equals("hello4"));
@@ -1135,6 +1219,11 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 7.5D);
     assertTrue(avgf.doubleValue() == 5.5D);
     assertTrue(count.doubleValue() == 2);
+    assertTrue(stdi.doubleValue() == 4.949747468305833D);
+    assertTrue(stdf.doubleValue() == 2.1213203435596424D);
+    assertTrue(peri.doubleValue() == 7.5D);
+    assertTrue(perf.doubleValue() ==  5.5D);
+
 
     tuple = tuples.get(1);
     bucket = tuple.getString("a_s");
@@ -1147,6 +1236,11 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
+
 
     assertTrue(bucket.equals("hello0"));
     assertTrue(sumi.doubleValue() == 17.0D);
@@ -1158,6 +1252,11 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 4.25D);
     assertTrue(avgf.doubleValue() == 4.5D);
     assertTrue(count.doubleValue() == 4);
+    assertTrue(stdi.doubleValue() == 6.551081335677848D);
+    assertTrue(stdf.doubleValue() == 4.041451884327381D);
+    assertTrue(peri.doubleValue() == 1.5D);
+    assertTrue(perf.doubleValue() ==  3.5D);
+
 
     tuple = tuples.get(2);
     bucket = tuple.getString("a_s");
@@ -1170,6 +1269,15 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
+
+
+    System.out.println("STD and Per:"+stdi+":"+stdf+":"+peri+":"+perf);
+//STD and Per:4.509249752822894:2.6457513110645907:11.0:7.0
+    //assert(false);
 
     assertTrue(bucket.equals("hello3"));
     assertTrue(sumi.doubleValue() == 38.0D);
@@ -1181,6 +1289,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 9.5D);
     assertTrue(avgf.doubleValue() == 6.5D);
     assertTrue(count.doubleValue() == 4);
+    assertTrue(stdi.doubleValue() == 4.509249752822894D);
+    assertTrue(stdf.doubleValue() == 2.6457513110645907D);
+    assertTrue(peri.doubleValue() == 11.0D);
+    assertTrue(perf.doubleValue() ==  7.0D);
 
 
     //Reverse the Sort.
@@ -1197,6 +1309,8 @@ public class StreamExpressionTest extends SolrCloudTestCase {
         +   "min(a_i), min(a_f), "
         +   "max(a_i), max(a_f), "
         +   "avg(a_i), avg(a_f), "
+        +   "std(a_i), std(a_f),"
+        +   "per(a_i, 50), per(a_f, 50),"
         +   "count(*)"
         + ")";
 
@@ -1217,6 +1331,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
 
     assertTrue(bucket.equals("hello3"));
     assertTrue(sumi.doubleValue() == 38.0D);
@@ -1228,6 +1346,11 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 9.5D);
     assertTrue(avgf.doubleValue() == 6.5D);
     assertTrue(count.doubleValue() == 4);
+    assertTrue(stdi.doubleValue() == 4.509249752822894D);
+    assertTrue(stdf.doubleValue() == 2.6457513110645907D);
+    assertTrue(peri.doubleValue() == 11.0D);
+    assertTrue(perf.doubleValue() ==  7.0D);
+
 
     tuple = tuples.get(1);
     bucket = tuple.getString("a_s");
@@ -1240,6 +1363,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
 
     assertTrue(bucket.equals("hello0"));
     assertTrue(sumi.doubleValue() == 17.0D);
@@ -1251,6 +1378,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 4.25D);
     assertTrue(avgf.doubleValue() == 4.5D);
     assertTrue(count.doubleValue() == 4);
+    assertTrue(stdi.doubleValue() == 6.551081335677848D);
+    assertTrue(stdf.doubleValue() == 4.041451884327381D);
+    assertTrue(peri.doubleValue() == 1.5D);
+    assertTrue(perf.doubleValue() ==  3.5D);
 
     tuple = tuples.get(2);
     bucket = tuple.getString("a_s");
@@ -1263,6 +1394,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
 
     assertTrue(bucket.equals("hello4"));
     assertTrue(sumi.longValue() == 15);
@@ -1274,6 +1409,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 7.5D);
     assertTrue(avgf.doubleValue() == 5.5D);
     assertTrue(count.doubleValue() == 2);
+    assertTrue(stdi.doubleValue() == 4.949747468305833D);
+    assertTrue(stdf.doubleValue() == 2.1213203435596424D);
+    assertTrue(peri.doubleValue() == 7.5D);
+    assertTrue(perf.doubleValue() ==  5.5D);
 
 
     clause = "facet("
@@ -1430,6 +1569,8 @@ public class StreamExpressionTest extends SolrCloudTestCase {
         +   "min(a_i), min(a_f), "
         +   "max(a_i), max(a_f), "
         +   "avg(a_i), avg(a_f), "
+        +   "std(a_i), std(a_f),"
+        +   "per(a_i, 50), per(a_f, 50),"
         +   "count(*)"
         + ")";
 
@@ -1450,7 +1591,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
-
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
 
     assertTrue(bucket.equals("hello4"));
     assertTrue(sumi.longValue() == 15);
@@ -1462,7 +1606,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 7.5D);
     assertTrue(avgf.doubleValue() == 5.5D);
     assertTrue(count.doubleValue() == 2);
-
+    assertTrue(stdi.doubleValue() == 4.949747468305833D);
+    assertTrue(stdf.doubleValue() == 2.1213203435596424D);
+    assertTrue(peri.doubleValue() == 7.5D);
+    assertTrue(perf.doubleValue() ==  5.5D);
 
     tuple = tuples.get(1);
     bucket = tuple.getString("a_s");
@@ -1475,6 +1622,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
 
     assertTrue(bucket.equals("hello3"));
     assertTrue(sumi.doubleValue() == 38.0D);
@@ -1486,6 +1637,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 9.5D);
     assertTrue(avgf.doubleValue() == 6.5D);
     assertTrue(count.doubleValue() == 4);
+    assertTrue(stdi.doubleValue() == 4.509249752822894D);
+    assertTrue(stdf.doubleValue() == 2.6457513110645907D);
+    assertTrue(peri.doubleValue() == 11.0D);
+    assertTrue(perf.doubleValue() ==  7.0D);
 
 
     tuple = tuples.get(2);
@@ -1499,6 +1654,10 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     avgi = tuple.getDouble("avg(a_i)");
     avgf = tuple.getDouble("avg(a_f)");
     count = tuple.getDouble("count(*)");
+    stdi = tuple.getDouble("std(a_i)");
+    stdf = tuple.getDouble("std(a_f)");
+    peri = tuple.getDouble("per(a_i,50)");
+    perf = tuple.getDouble("per(a_f,50)");
 
     assertTrue(bucket.equals("hello0"));
     assertTrue(sumi.doubleValue() == 17.0D);
@@ -1510,6 +1669,11 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(avgi.doubleValue() == 4.25D);
     assertTrue(avgf.doubleValue() == 4.5D);
     assertTrue(count.doubleValue() == 4);
+    assertTrue(stdi.doubleValue() == 6.551081335677848D);
+    assertTrue(stdf.doubleValue() == 4.041451884327381D);
+    assertTrue(peri.doubleValue() == 1.5D);
+    assertTrue(perf.doubleValue() ==  3.5D);
+
 
     //Test index sort
 
@@ -1763,14 +1927,16 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       .withFunctionName("min", MinMetric.class)
       .withFunctionName("max", MaxMetric.class)
       .withFunctionName("avg", MeanMetric.class)
-      .withFunctionName("count", CountMetric.class);
+      .withFunctionName("count", CountMetric.class)
+      .withFunctionName("std", StdMetric.class)
+      .withFunctionName("per", PercentileMetric.class);
 
     // Basic test
     clause = "facet("
               +   "collection1, "
               +   "q=\"*:*\", "
               +   "buckets=\"level1_s, level2_s\", "
-              +   "bucketSorts=\"sum(a_i) desc, sum(a_i) desc)\", "
+              +   "bucketSorts=\"sum(a_i) desc, sum(a_i) desc\", "
               +   "bucketSizeLimit=100, "
               +   "sum(a_i), count(*)"
               + ")";
@@ -1850,7 +2016,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
         +   "collection1, "
         +   "q=\"*:*\", "
         +   "buckets=\"level1_s, level2_s\", "
-        +   "bucketSorts=\"level1_s desc, level2_s desc)\", "
+        +   "bucketSorts=\"level1_s desc, level2_s desc\", "
         +   "bucketSizeLimit=100, "
         +   "sum(a_i), count(*)"
         + ")";
@@ -1925,6 +2091,89 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(bucket2.equals("a"));
     assertTrue(sumi.longValue() == 2);
     assertTrue(count.doubleValue() == 2);
+
+    //Add sorts for percentile
+
+    clause = "facet("
+        +   "collection1, "
+        +   "q=\"*:*\", "
+        +   "buckets=\"level1_s, level2_s\", "
+        +   "bucketSorts=\"per(a_i, 50) desc, std(a_i) desc\", "
+        +   "bucketSizeLimit=100, "
+        +   "std(a_i), per(a_i,50)"
+        + ")";
+
+    stream = factory.constructStream(clause);
+    tuples = getTuples(stream);
+
+    assert(tuples.size() == 6);
+
+    tuple = tuples.get(0);
+    bucket1 = tuple.getString("level1_s");
+    bucket2 = tuple.getString("level2_s");
+    double stdi = tuple.getDouble("std(a_i)");
+    double peri = tuple.getDouble("per(a_i,50)");
+
+    assertTrue(bucket1.equals("hello3"));
+    assertTrue(bucket2.equals("b"));
+    assertTrue(stdi  == 1.5275252316519468D);
+    assertTrue(peri == 12.0D);
+
+    tuple = tuples.get(1);
+    bucket1 = tuple.getString("level1_s");
+    bucket2 = tuple.getString("level2_s");
+    stdi = tuple.getDouble("std(a_i)");
+    peri = tuple.getDouble("per(a_i,50)");
+
+    assertTrue(bucket1.equals("hello4"));
+    assertTrue(bucket2.equals("b"));
+    assertTrue(stdi  == 0.0D);
+    assertTrue(peri == 11.0);
+
+    tuple = tuples.get(2);
+    bucket1 = tuple.getString("level1_s");
+    bucket2 = tuple.getString("level2_s");
+    stdi = tuple.getDouble("std(a_i)");
+    peri = tuple.getDouble("per(a_i,50)");
+
+    assertTrue(bucket1.equals("hello0"));
+    assertTrue(bucket2.equals("b"));
+    assertTrue(stdi  == 9.192388155425117D);
+    assertTrue(peri == 7.5D);
+
+    tuple = tuples.get(3);
+    bucket1 = tuple.getString("level1_s");
+    bucket2 = tuple.getString("level2_s");
+    stdi = tuple.getDouble("std(a_i)");
+    peri = tuple.getDouble("per(a_i,50)");
+
+    assertTrue(bucket1.equals("hello4"));
+    assertTrue(bucket2.equals("a"));
+    assertTrue(stdi  == 0.0D);
+    assertTrue(peri == 4.0D);
+
+    tuple = tuples.get(4);
+    bucket1 = tuple.getString("level1_s");
+    bucket2 = tuple.getString("level2_s");
+    stdi = tuple.getDouble("std(a_i)");
+    peri = tuple.getDouble("per(a_i,50)");
+
+    assertTrue(bucket1.equals("hello3"));
+    assertTrue(bucket2.equals("a"));
+    assertTrue(stdi  == 0.0D);
+    assertTrue(peri == 3.0D);
+
+    tuple = tuples.get(5);
+    bucket1 = tuple.getString("level1_s");
+    bucket2 = tuple.getString("level2_s");
+    stdi = tuple.getDouble("std(a_i)");
+    peri = tuple.getDouble("per(a_i,50)");
+
+    assertTrue(bucket1.equals("hello0"));
+    assertTrue(bucket2.equals("a"));
+    assertTrue(stdi  == 1.4142135623730951D);
+    assertTrue(peri == 1.0D);
+
   }
 
   @Test
@@ -2400,7 +2649,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
         "end=\"2017-12-01T01:00:00.000Z\", " +
         "gap=\"+1YEAR\", " +
         "field=\"test_dt\", " +
-        "count(*), sum(price_f), max(price_f), min(price_f))";
+        "count(*), sum(price_f), max(price_f), min(price_f), avg(price_f), std(price_f), per(price_f, 50))";
     ModifiableSolrParams paramsLoc = new ModifiableSolrParams();
     paramsLoc.set("expr", expr);
     paramsLoc.set("qt", "/stream");
@@ -2418,38 +2667,52 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(tuples.get(0).getDouble("sum(price_f)").equals(10000D));
     assertTrue(tuples.get(0).getDouble("max(price_f)").equals(100D));
     assertTrue(tuples.get(0).getDouble("min(price_f)").equals(100D));
+    assertTrue(tuples.get(0).getDouble("avg(price_f)").equals(100D));
+    assertTrue(tuples.get(0).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(0).getDouble("per(price_f,50)").equals(100D));
 
     assertTrue(tuples.get(1).get("test_dt").equals("2014-01-01T01:00:00Z"));
     assertTrue(tuples.get(1).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(1).getDouble("sum(price_f)").equals(25000D));
     assertTrue(tuples.get(1).getDouble("max(price_f)").equals(500D));
     assertTrue(tuples.get(1).getDouble("min(price_f)").equals(500D));
+    assertTrue(tuples.get(1).getDouble("avg(price_f)").equals(500D));
+    assertTrue(tuples.get(1).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(1).getDouble("per(price_f,50)").equals(500D));
 
     assertTrue(tuples.get(2).get("test_dt").equals("2015-01-01T01:00:00Z"));
     assertTrue(tuples.get(2).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(2).getDouble("sum(price_f)").equals(15000D));
     assertTrue(tuples.get(2).getDouble("max(price_f)").equals(300D));
     assertTrue(tuples.get(2).getDouble("min(price_f)").equals(300D));
+    assertTrue(tuples.get(2).getDouble("avg(price_f)").equals(300D));
+    assertTrue(tuples.get(2).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(2).getDouble("per(price_f,50)").equals(300D));
 
     assertTrue(tuples.get(3).get("test_dt").equals("2016-01-01T01:00:00Z"));
     assertTrue(tuples.get(3).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(3).getDouble("sum(price_f)").equals(20000D));
     assertTrue(tuples.get(3).getDouble("max(price_f)").equals(400D));
     assertTrue(tuples.get(3).getDouble("min(price_f)").equals(400D));
+    assertTrue(tuples.get(3).getDouble("avg(price_f)").equals(400D));
+    assertTrue(tuples.get(3).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(3).getDouble("per(price_f,50)").equals(400D));
 
     assertTrue(tuples.get(4).get("test_dt").equals("2017-01-01T01:00:00Z"));
     assertEquals((long)tuples.get(4).getLong("count(*)"), 0L);
     assertEquals(tuples.get(4).getDouble("sum(price_f)"), 0D, 0);
     assertEquals(tuples.get(4).getDouble("max(price_f)"),0D, 0);
     assertEquals(tuples.get(4).getDouble("min(price_f)"), 0D, 0);
-
+    assertTrue(tuples.get(4).getDouble("avg(price_f)").equals(0D));
+    assertTrue(tuples.get(4).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(4).getDouble("per(price_f,50)").equals(0D));
 
     expr = "timeseries("+COLLECTIONORALIAS+", q=\"*:*\", start=\"2013-01-01T01:00:00.000Z\", " +
         "end=\"2016-12-01T01:00:00.000Z\", " +
         "gap=\"+1YEAR\", " +
         "field=\"test_dt\", " +
         "format=\"yyyy\", " +
-        "count(*), sum(price_f), max(price_f), min(price_f))";
+        "count(*), sum(price_f), max(price_f), min(price_f), avg(price_f), std(price_f), per(price_f, 50))";
     paramsLoc = new ModifiableSolrParams();
     paramsLoc.set("expr", expr);
     paramsLoc.set("qt", "/stream");
@@ -2465,31 +2728,45 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(tuples.get(0).getDouble("sum(price_f)").equals(10000D));
     assertTrue(tuples.get(0).getDouble("max(price_f)").equals(100D));
     assertTrue(tuples.get(0).getDouble("min(price_f)").equals(100D));
+    assertTrue(tuples.get(0).getDouble("avg(price_f)").equals(100D));
+    assertTrue(tuples.get(0).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(0).getDouble("per(price_f,50)").equals(100D));
 
     assertTrue(tuples.get(1).get("test_dt").equals("2014"));
     assertTrue(tuples.get(1).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(1).getDouble("sum(price_f)").equals(25000D));
     assertTrue(tuples.get(1).getDouble("max(price_f)").equals(500D));
     assertTrue(tuples.get(1).getDouble("min(price_f)").equals(500D));
+    assertTrue(tuples.get(1).getDouble("avg(price_f)").equals(500D));
+    assertTrue(tuples.get(1).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(1).getDouble("per(price_f,50)").equals(500D));
+
 
     assertTrue(tuples.get(2).get("test_dt").equals("2015"));
     assertTrue(tuples.get(2).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(2).getDouble("sum(price_f)").equals(15000D));
     assertTrue(tuples.get(2).getDouble("max(price_f)").equals(300D));
     assertTrue(tuples.get(2).getDouble("min(price_f)").equals(300D));
+    assertTrue(tuples.get(2).getDouble("avg(price_f)").equals(300D));
+    assertTrue(tuples.get(2).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(2).getDouble("per(price_f,50)").equals(300D));
 
     assertTrue(tuples.get(3).get("test_dt").equals("2016"));
     assertTrue(tuples.get(3).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(3).getDouble("sum(price_f)").equals(20000D));
     assertTrue(tuples.get(3).getDouble("max(price_f)").equals(400D));
     assertTrue(tuples.get(3).getDouble("min(price_f)").equals(400D));
+    assertTrue(tuples.get(3).getDouble("avg(price_f)").equals(400D));
+    assertTrue(tuples.get(3).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(3).getDouble("per(price_f,50)").equals(400D));
+
 
     expr = "timeseries("+COLLECTIONORALIAS+", q=\"*:*\", start=\"2013-01-01T01:00:00.000Z\", " +
         "end=\"2016-12-01T01:00:00.000Z\", " +
         "gap=\"+1YEAR\", " +
         "field=\"test_dt\", " +
         "format=\"yyyy-MM\", " +
-        "count(*), sum(price_f), max(price_f), min(price_f))";
+        "count(*), sum(price_f), max(price_f), min(price_f), avg(price_f), std(price_f), per(price_f, 50))";
     paramsLoc = new ModifiableSolrParams();
     paramsLoc.set("expr", expr);
     paramsLoc.set("qt", "/stream");
@@ -2505,24 +2782,36 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(tuples.get(0).getDouble("sum(price_f)").equals(10000D));
     assertTrue(tuples.get(0).getDouble("max(price_f)").equals(100D));
     assertTrue(tuples.get(0).getDouble("min(price_f)").equals(100D));
+    assertTrue(tuples.get(0).getDouble("avg(price_f)").equals(100D));
+    assertTrue(tuples.get(0).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(0).getDouble("per(price_f,50)").equals(100D));
 
     assertTrue(tuples.get(1).get("test_dt").equals("2014-01"));
     assertTrue(tuples.get(1).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(1).getDouble("sum(price_f)").equals(25000D));
     assertTrue(tuples.get(1).getDouble("max(price_f)").equals(500D));
     assertTrue(tuples.get(1).getDouble("min(price_f)").equals(500D));
+    assertTrue(tuples.get(1).getDouble("avg(price_f)").equals(500D));
+    assertTrue(tuples.get(1).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(1).getDouble("per(price_f,50)").equals(500D));
 
     assertTrue(tuples.get(2).get("test_dt").equals("2015-01"));
     assertTrue(tuples.get(2).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(2).getDouble("sum(price_f)").equals(15000D));
     assertTrue(tuples.get(2).getDouble("max(price_f)").equals(300D));
     assertTrue(tuples.get(2).getDouble("min(price_f)").equals(300D));
+    assertTrue(tuples.get(2).getDouble("avg(price_f)").equals(300D));
+    assertTrue(tuples.get(2).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(2).getDouble("per(price_f,50)").equals(300D));
 
     assertTrue(tuples.get(3).get("test_dt").equals("2016-01"));
     assertTrue(tuples.get(3).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(3).getDouble("sum(price_f)").equals(20000D));
     assertTrue(tuples.get(3).getDouble("max(price_f)").equals(400D));
     assertTrue(tuples.get(3).getDouble("min(price_f)").equals(400D));
+    assertTrue(tuples.get(3).getDouble("avg(price_f)").equals(400D));
+    assertTrue(tuples.get(3).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(3).getDouble("per(price_f,50)").equals(400D));
 
 
     expr = "timeseries("+COLLECTIONORALIAS+", q=\"*:*\", start=\"2012-01-01T01:00:00.000Z\", " +
@@ -2530,7 +2819,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
         "gap=\"+1YEAR\", " +
         "field=\"test_dt\", " +
         "format=\"yyyy-MM\", " +
-        "count(*), sum(price_f), max(price_f), min(price_f))";
+        "count(*), sum(price_f), max(price_f), min(price_f), avg(price_f), std(price_f), per(price_f, 50))";
     paramsLoc = new ModifiableSolrParams();
     paramsLoc.set("expr", expr);
     paramsLoc.set("qt", "/stream");
@@ -2545,30 +2834,45 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(tuples.get(0).getDouble("sum(price_f)") == 0);
     assertTrue(tuples.get(0).getDouble("max(price_f)") == 0);
     assertTrue(tuples.get(0).getDouble("min(price_f)") == 0);
+    assertTrue(tuples.get(0).getDouble("avg(price_f)").equals(0D));
+    assertTrue(tuples.get(0).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(0).getDouble("per(price_f,50)").equals(0D));
 
     assertTrue(tuples.get(1).get("test_dt").equals("2013-01"));
     assertTrue(tuples.get(1).getLong("count(*)").equals(100L));
     assertTrue(tuples.get(1).getDouble("sum(price_f)").equals(10000D));
     assertTrue(tuples.get(1).getDouble("max(price_f)").equals(100D));
     assertTrue(tuples.get(1).getDouble("min(price_f)").equals(100D));
+    assertTrue(tuples.get(1).getDouble("avg(price_f)").equals(100D));
+    assertTrue(tuples.get(1).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(1).getDouble("per(price_f,50)").equals(100D));
 
     assertTrue(tuples.get(2).get("test_dt").equals("2014-01"));
     assertTrue(tuples.get(2).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(2).getDouble("sum(price_f)").equals(25000D));
     assertTrue(tuples.get(2).getDouble("max(price_f)").equals(500D));
     assertTrue(tuples.get(2).getDouble("min(price_f)").equals(500D));
+    assertTrue(tuples.get(2).getDouble("avg(price_f)").equals(500D));
+    assertTrue(tuples.get(2).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(2).getDouble("per(price_f,50)").equals(500D));
 
     assertTrue(tuples.get(3).get("test_dt").equals("2015-01"));
     assertTrue(tuples.get(3).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(3).getDouble("sum(price_f)").equals(15000D));
     assertTrue(tuples.get(3).getDouble("max(price_f)").equals(300D));
     assertTrue(tuples.get(3).getDouble("min(price_f)").equals(300D));
+    assertTrue(tuples.get(3).getDouble("avg(price_f)").equals(300D));
+    assertTrue(tuples.get(3).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(3).getDouble("per(price_f,50)").equals(300D));
 
     assertTrue(tuples.get(4).get("test_dt").equals("2016-01"));
     assertTrue(tuples.get(4).getLong("count(*)").equals(50L));
     assertTrue(tuples.get(4).getDouble("sum(price_f)").equals(20000D));
     assertTrue(tuples.get(4).getDouble("max(price_f)").equals(400D));
     assertTrue(tuples.get(4).getDouble("min(price_f)").equals(400D));
+    assertTrue(tuples.get(4).getDouble("avg(price_f)").equals(400D));
+    assertTrue(tuples.get(4).getDouble("std(price_f)").equals(0D));
+    assertTrue(tuples.get(4).getDouble("per(price_f,50)").equals(400D));
   }
 
   @Test
@@ -2578,7 +2882,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     updateRequest.add(id, "hello1", "test_t", "l b c d c");
     updateRequest.commit(cluster.getSolrClient(), COLLECTIONORALIAS);
 
-    String expr = "search("+COLLECTIONORALIAS+", q=\"*:*\", fl=\"id,test_t\", sort=\"id desc\")";
+    String expr = "search("+COLLECTIONORALIAS+", q=\"`c d c`\", fl=\"id,test_t\", sort=\"id desc\")";
 
     //Add a Stream and an Evaluator to the Tuple.
     String cat = "tuple(results="+expr+", sum=add(1,1))";
@@ -2602,6 +2906,32 @@ public class StreamExpressionTest extends SolrCloudTestCase {
     assertTrue(tuples.get(0).getLong("sum").equals(2L));
 
   }
+
+  @Test
+  public void testSearchBacktick() throws Exception {
+    UpdateRequest updateRequest = new UpdateRequest();
+    updateRequest.add(id, "hello", "test_t", "l b c d c e");
+    updateRequest.add(id, "hello1", "test_t", "l b c d c");
+    updateRequest.commit(cluster.getSolrClient(), COLLECTIONORALIAS);
+
+    String expr = "search("+COLLECTIONORALIAS+", q=\"`c d c e`\", fl=\"id,test_t\", sort=\"id desc\")";
+
+    ModifiableSolrParams paramsLoc = new ModifiableSolrParams();
+    paramsLoc.set("expr", expr);
+    paramsLoc.set("qt", "/stream");
+
+    String url = cluster.getJettySolrRunners().get(0).getBaseUrl().toString()+"/"+COLLECTIONORALIAS;
+    TupleStream solrStream = new SolrStream(url, paramsLoc);
+
+    StreamContext context = new StreamContext();
+    solrStream.setStreamContext(context);
+    List<Tuple> tuples = getTuples(solrStream);
+    assertTrue(tuples.size() == 1);
+    Tuple tuple = tuples.get(0);
+    assertTrue(tuple.get("id").equals("hello"));
+    assertTrue(tuple.get("test_t").equals("l b c d c e"));
+  }
+
 
 
   private Map<String,Double> getIdToLabel(TupleStream stream, String outField) throws IOException {
@@ -2698,7 +3028,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       tuples = getTuples(stream);
       assertEquals(100, tuples.size());
       Tuple lastModel = tuples.get(0);
-      ClassificationEvaluation evaluation = ClassificationEvaluation.create(lastModel.fields);
+      ClassificationEvaluation evaluation = ClassificationEvaluation.create(lastModel.getFields());
       assertTrue(evaluation.getF1() >= 1.0);
       assertEquals(Math.log(5000.0 / (2500 + 1)), lastModel.getDoubles("idfs_ds").get(0), 0.0001);
       // make sure the tuples is retrieved in correct order
@@ -2780,7 +3110,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       assertTrue(tuples.get(3).get("term_s").equals("f"));
 
       // update
-      expression = StreamExpressionParser.parse("update(destinationCollection, batchSize=5, " + featuresExpression + ")");
+      expression = StreamExpressionParser.parse("update(destinationCollection, " + featuresExpression + ")");
       stream = new UpdateStream(expression, factory);
       stream.setStreamContext(streamContext);
       getTuples(stream);
@@ -3223,7 +3553,7 @@ public class StreamExpressionTest extends SolrCloudTestCase {
       final String baseDir = cluster.getBaseDir().toAbsolutePath().toString();
       for (CoreDescriptor coreDescriptor : jetty.getCoreContainer().getCoreDescriptors()) {
         if (coreDescriptor.getCollectionName().equals(FILESTREAM_COLLECTION)) {
-          return Paths.get(jetty.getSolrHome(), SolrResourceLoader.USER_FILES_DIRECTORY).toAbsolutePath().toString();
+          return Paths.get(jetty.getSolrHome(), SolrPaths.USER_FILES_DIRECTORY).toAbsolutePath().toString();
         }
       }
     }

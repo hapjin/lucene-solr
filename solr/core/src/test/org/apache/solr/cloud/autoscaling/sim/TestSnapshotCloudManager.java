@@ -45,12 +45,14 @@ import org.apache.solr.client.solrj.cloud.autoscaling.Suggester;
 import org.apache.solr.client.solrj.cloud.autoscaling.Suggestion;
 import org.apache.solr.client.solrj.cloud.autoscaling.VersionedData;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
+import org.apache.solr.cloud.CloudTestUtils;
 import org.apache.solr.cloud.SolrCloudTestCase;
 import org.apache.solr.common.cloud.ClusterState;
 import org.apache.solr.common.cloud.Replica;
 import org.apache.solr.common.params.CollectionAdminParams;
 import org.apache.solr.common.util.TimeSource;
 import org.apache.solr.common.util.Utils;
+import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -80,6 +82,14 @@ public class TestSnapshotCloudManager extends SolrCloudTestCase {
         .process(cluster.getSolrClient());
     realManager = cluster.getJettySolrRunner(cluster.getJettySolrRunners().size() - 1).getCoreContainer()
         .getZkController().getSolrCloudManager();
+    // disable .scheduled_maintenance (once it exists)
+    CloudTestUtils.waitForTriggerToBeScheduled(realManager, ".scheduled_maintenance");
+    CloudTestUtils.suspendTrigger(realManager, ".scheduled_maintenance");
+  }
+
+  @AfterClass
+  public static void cleanUpAfterClass() throws Exception {
+    realManager = null;
   }
 
   @Test
@@ -111,10 +121,11 @@ public class TestSnapshotCloudManager extends SolrCloudTestCase {
   public void testRedaction() throws Exception {
     Path tmpPath = createTempDir();
     File tmpDir = tmpPath.toFile();
-    SnapshotCloudManager snapshotCloudManager = new SnapshotCloudManager(realManager, null);
     Set<String> redacted = new HashSet<>(realManager.getClusterStateProvider().getLiveNodes());
-    redacted.addAll(realManager.getClusterStateProvider().getClusterState().getCollectionStates().keySet());
-    snapshotCloudManager.saveSnapshot(tmpDir, true, true);
+    try (SnapshotCloudManager snapshotCloudManager = new SnapshotCloudManager(realManager, null)) {
+      redacted.addAll(realManager.getClusterStateProvider().getClusterState().getCollectionStates().keySet());
+      snapshotCloudManager.saveSnapshot(tmpDir, true, true);
+    }
     for (String key : SnapshotCloudManager.REQUIRED_KEYS) {
       File src = new File(tmpDir, key + ".json");
       assertTrue(src.toString() + " doesn't exist", src.exists());
@@ -215,10 +226,16 @@ public class TestSnapshotCloudManager extends SolrCloudTestCase {
 
   // ignore these because SimCloudManager always modifies them
   private static final Set<Pattern> IGNORE_DISTRIB_STATE_PATTERNS = new HashSet<>(Arrays.asList(
-      Pattern.compile("/autoscaling/triggerState.*"),
-      Pattern.compile("/clusterstate\\.json"), // different format in SimClusterStateProvider
+      Pattern.compile("/autoscaling/triggerState/.*"),
+      // some triggers may have run after the snapshot was taken
+      Pattern.compile("/autoscaling/events/.*"),
+      Pattern.compile("/clusterstate\\.json"),
+      Pattern.compile("/collections/[^/]+?/state.json"),
+      // depending on the startup sequence leaders may differ
       Pattern.compile("/collections/[^/]+?/leader_elect/.*"),
       Pattern.compile("/collections/[^/]+?/leaders/.*"),
+      Pattern.compile("/collections/[^/]+?/terms/.*"),
+      Pattern.compile("/overseer_elect/election/.*"),
       Pattern.compile("/live_nodes/.*")
   ));
 
@@ -238,6 +255,14 @@ public class TestSnapshotCloudManager extends SolrCloudTestCase {
         .filter(STATE_FILTER_FUN).collect(Collectors.toList()));
     Collections.sort(treeOne);
     Collections.sort(treeTwo);
+    if (!treeOne.equals(treeTwo)) {
+      List<String> t1 = new ArrayList<>(treeOne);
+      t1.removeAll(treeTwo);
+      log.warn("Only in tree one: {}", t1);
+      List<String> t2 = new ArrayList<>(treeTwo);
+      t2.removeAll(treeOne);
+      log.warn("Only in tree two: {}", t2);
+    }
     assertEquals(treeOne, treeTwo);
     for (String path : treeOne) {
       VersionedData vd1 = one.getData(path);

@@ -21,7 +21,7 @@ import org.apache.http.annotation.Experimental;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.util.ExecutorUtil;
 import org.apache.solr.logging.MDCLoggingContext;
-import org.apache.solr.util.DefaultSolrThreadFactory;
+import org.apache.solr.common.util.SolrNamedThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -130,7 +130,7 @@ class SolrCores {
       }
       
       ExecutorService coreCloseExecutor = ExecutorUtil.newMDCAwareFixedThreadPool(Integer.MAX_VALUE,
-          new DefaultSolrThreadFactory("coreCloseExecutor"));
+          new SolrNamedThreadFactory("coreCloseExecutor"));
       try {
         for (SolrCore core : coreList) {
           coreCloseExecutor.submit(() -> {
@@ -182,10 +182,9 @@ class SolrCores {
    */
 
   List<SolrCore> getCores() {
-    List<SolrCore> lst = new ArrayList<>();
 
     synchronized (modifyLock) {
-      lst.addAll(cores.values());
+      List<SolrCore> lst = new ArrayList<>(cores.values());
       return lst;
     }
   }
@@ -201,10 +200,10 @@ class SolrCores {
    * @return List of currently loaded cores.
    */
   Set<String> getLoadedCoreNames() {
-    Set<String> set = new TreeSet<>();
+    Set<String> set;
 
     synchronized (modifyLock) {
-      set.addAll(cores.keySet());
+      set = new TreeSet<>(cores.keySet());
       if (getTransientCacheHandler() != null) {
         set.addAll(getTransientCacheHandler().getLoadedCoreNames());
       }
@@ -239,9 +238,9 @@ class SolrCores {
    * @return all cores names, whether loaded or unloaded, transient or permanent.
    */
   public Collection<String> getAllCoreNames() {
-    Set<String> set = new TreeSet<>();
+    Set<String> set;
     synchronized (modifyLock) {
-      set.addAll(cores.keySet());
+      set = new TreeSet<>(cores.keySet());
       if (getTransientCacheHandler() != null) {
         set.addAll(getTransientCacheHandler().getAllCoreNames());
       }
@@ -542,8 +541,8 @@ class SolrCores {
   public TransientSolrCoreCache getTransientCacheHandler() {
 
     if (transientCoreCache == null) {
-      log.error("No transient handler has been defined. Check solr.xml to see if an attempt to provide a custom " +
-          "TransientSolrCoreCacheFactory was done incorrectly since the default should have been used otherwise.");
+      log.error("No transient handler has been defined. Check solr.xml to see if an attempt to provide a custom {}"
+          , "TransientSolrCoreCacheFactory was done incorrectly since the default should have been used otherwise.");
       return null;
     }
     return transientCoreCache.getTransientSolrCoreCache();

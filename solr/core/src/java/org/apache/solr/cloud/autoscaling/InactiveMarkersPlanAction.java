@@ -37,6 +37,9 @@ import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.solr.cloud.autoscaling.OverseerTriggerThread.MARKER_ACTIVE;
+import static org.apache.solr.cloud.autoscaling.OverseerTriggerThread.MARKER_STATE;
+
 /**
  * This plan simply removes nodeAdded and nodeLost markers from Zookeeper if their TTL has
  * expired. These markers are used by {@link NodeAddedTrigger} and {@link NodeLostTrigger} to
@@ -72,7 +75,9 @@ public class InactiveMarkersPlanAction extends TriggerActionBase {
 
   @Override
   public void process(TriggerEvent event, ActionContext context) throws Exception {
-    log.trace("-- {} cleaning markers", getName());
+    if (log.isTraceEnabled()) {
+      log.trace("-- {} cleaning markers", getName());
+    }
     // use epoch time to track this across JVMs and nodes
     long currentTimeNs = cloudManager.getTimeSource().getEpochTimeNs();
     Map<String, Object> results = new LinkedHashMap<>();
@@ -105,12 +110,14 @@ public class InactiveMarkersPlanAction extends TriggerActionBase {
           log.trace(" -- ignore {}: either missing or unsupported format", markerPath);
           return;
         }
+        boolean activeMarker = payload.getOrDefault(MARKER_STATE, MARKER_ACTIVE)
+            .equals(MARKER_ACTIVE);
         long timestamp = ((Number)payload.get("timestamp")).longValue();
         long delta = TimeUnit.NANOSECONDS.toSeconds(currentTimeNs - timestamp);
-        if (delta > cleanupTTL) {
+        if (delta > cleanupTTL || !activeMarker) {
           try {
             stateManager.removeData(markerPath, -1);
-            log.trace(" -- remove {}, delta={}, ttl={}", markerPath, delta, cleanupTTL);
+            log.trace(" -- remove {}, delta={}, ttl={}, active={}", markerPath, delta, cleanupTTL, activeMarker);
             cleanedUp.add(m);
           } catch (NoSuchElementException nse) {
             // someone already removed it - ignore
@@ -118,10 +125,10 @@ public class InactiveMarkersPlanAction extends TriggerActionBase {
           } catch (BadVersionException be) {
             throw new RuntimeException("should never happen", be);
           } catch (NotEmptyException ne) {
-            log.error("Marker znode should be empty but it's not! Ignoring {} ({})", markerPath, ne.toString());
+            log.error("Marker znode should be empty but it's not! Ignoring {} ({})", markerPath, ne);
           }
         } else {
-          log.trace(" -- keep {}, delta={}, ttl={}", markerPath, delta, cleanupTTL);
+          log.trace(" -- keep {}, delta={}, ttl={}, active={}", markerPath, delta, cleanupTTL, activeMarker);
         }
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
